@@ -2,8 +2,9 @@ import tkinter as tk
 from tkinter import ttk
 import random
 import time
-from typing import List, Optional
+from typing import List
 from lifeform import Lifeform, GridSquare
+
 
 class GridSimulation:
     """Grid-based artificial life simulation with tkinter GUI"""
@@ -13,6 +14,13 @@ class GridSimulation:
         self.root.title("Grid Life Simulation")
         self.root.geometry("900x700")
         
+        # Random number generators with fixed seeds for reproducibility
+        self.habitat_rng = random.Random(12345)    # For habitat generation
+        self.food_rng = random.Random(54321)       # For food behavior
+        self.lifeform_rng = random.Random(98765)   # For lifeform behavior
+        self.combat_rng = random.Random(13579)     # For combat decisions
+        self.movement_rng = random.Random(24680)   # For movement decisions
+        
         # Simulation parameters
         self.grid_size = 10
         self.initial_population = 5
@@ -20,6 +28,8 @@ class GridSimulation:
         self.lifeforms: List[Lifeform] = []
         self.running = False
         self.last_update = time.time()
+        self.time_period = 0  # Track time periods for seasons
+        self.speed_multiplier = 1.0  # Speed control
         
         # GUI elements
         self.canvas = None
@@ -48,6 +58,15 @@ class GridSimulation:
         population_spin = ttk.Spinbox(control_frame, from_=1, to=50, width=5,
                                     textvariable=self.population_var)
         population_spin.pack(side=tk.LEFT, padx=5)
+        
+        # Speed control
+        ttk.Label(control_frame, text="Speed:").pack(side=tk.LEFT, padx=(20,5))
+        self.speed_var = tk.StringVar(value="1.0")
+        speed_dropdown = ttk.Combobox(control_frame, textvariable=self.speed_var,
+                                    values=["0.1", "0.25", "0.5", "1.0", "2.0", "5.0", "10.0"], 
+                                    width=6)
+        speed_dropdown.pack(side=tk.LEFT, padx=5)
+        speed_dropdown.bind("<<ComboboxSelected>>", self.on_speed_change)
         
         # Buttons
         self.start_button = ttk.Button(control_frame, text="Start", command=self.start_simulation)
@@ -79,32 +98,107 @@ class GridSimulation:
         self.square_size = min(40, 600 // self.grid_size)  # Adjust square size for screen
         self.reset_simulation()
         
+    def on_speed_change(self, event=None):
+        """Handle speed change"""
+        self.speed_multiplier = float(self.speed_var.get())
+        
     def create_grid(self):
         """Create the grid of squares"""
         self.grid = []
         for x in range(self.grid_size):
             column = []
             for y in range(self.grid_size):
-                column.append(GridSquare())
+                # Create a separate RNG for each square's food behavior
+                square_seed = self.food_rng.randint(1, 1000000)
+                square_rng = random.Random(square_seed)
+                column.append(GridSquare(square_rng))
             self.grid.append(column)
+        
+        # Initialize habitat after creating grid
+        self.initialize_habitat()
             
+    def initialize_habitat(self):
+        """Initialize food maximum values with clumped distribution for richer/poorer habitats"""
+        # First pass: set base max food values and regeneration rates
+        for x in range(self.grid_size):
+            for y in range(self.grid_size):
+                # Start with moderate base values
+                self.grid[x][y].max_food = self.habitat_rng.uniform(20, 35)
+                self.grid[x][y].base_regen_rate = self.grid[x][y].regen_rate  # Store original
+        
+        # Second pass: create clumps by adjusting neighbors
+        num_rich_patches = self.habitat_rng.randint(2, 4)  # 2-4 rich areas
+        num_poor_patches = self.habitat_rng.randint(1, 3)  # 1-3 poor areas
+        
+        # Create rich patches
+        for _ in range(num_rich_patches):
+            center_x = self.habitat_rng.randint(2, self.grid_size - 3)  # More margin for 5x5
+            center_y = self.habitat_rng.randint(2, self.grid_size - 3)
+            
+            # Enhance food in 5x5 area around center
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    nx, ny = center_x + dx, center_y + dy
+                    if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
+                        # Manhattan distance from center for linear drop-off
+                        distance = abs(dx) + abs(dy)
+                        # Linear drop-off: max effect at center (distance 0), min at corners (distance 4)
+                        enhancement = max(0, 25 - (distance * 5))  # 25, 20, 15, 10, 5
+                        self.grid[nx][ny].max_food += enhancement
+                        # Regeneration boost with linear drop-off
+                        regen_boost = 1.0 + max(0, 0.8 - (distance * 0.15))  # 1.8x to 1.2x to 1.0x
+                        self.grid[nx][ny].regen_rate = self.grid[nx][ny].base_regen_rate * regen_boost
+                        # Cap at reasonable maximum
+                        if self.grid[nx][ny].max_food > 70:
+                            self.grid[nx][ny].max_food = 70
+        
+        # Create poor patches
+        for _ in range(num_poor_patches):
+            center_x = self.habitat_rng.randint(2, self.grid_size - 3)  # More margin for 5x5
+            center_y = self.habitat_rng.randint(2, self.grid_size - 3)
+            
+            # Reduce food in 5x5 area around center
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    nx, ny = center_x + dx, center_y + dy
+                    if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
+                        # Manhattan distance from center for linear drop-off
+                        distance = abs(dx) + abs(dy)
+                        # Linear drop-off: max reduction at center, min at corners
+                        reduction = max(0, 20 - (distance * 4))  # 20, 16, 12, 8, 4
+                        self.grid[nx][ny].max_food -= reduction
+                        # Regeneration reduction with linear drop-off
+                        regen_reduction = 0.2 + (distance * 0.15)  # 0.2x to 0.8x (worse to better)
+                        self.grid[nx][ny].regen_rate = self.grid[nx][ny].base_regen_rate * regen_reduction
+                        # Cap at reasonable minimum
+                        if self.grid[nx][ny].max_food < 3:
+                            self.grid[nx][ny].max_food = 3
+        
+        # Set initial food amounts to random portion of max food
+        for x in range(self.grid_size):
+            for y in range(self.grid_size):
+                self.grid[x][y].food_amount = self.habitat_rng.uniform(0.2, 0.6) * self.grid[x][y].max_food
+                
     def place_initial_population(self):
         """Randomly place initial lifeforms on the grid"""
         self.lifeforms = []
-        population = int(self.population_var.get())
+        population_size = int(self.population_var.get())
         
-        for _ in range(population):
-            # Find empty square
+        for _ in range(population_size):
+            # Find random empty position
             attempts = 0
             while attempts < 100:  # Prevent infinite loop
-                x = random.randint(0, self.grid_size - 1)
-                y = random.randint(0, self.grid_size - 1)
+                x = self.lifeform_rng.randint(0, self.grid_size - 1)
+                y = self.lifeform_rng.randint(0, self.grid_size - 1)
                 
-                if self.grid[x][y].lifeform is None:
-                    lifeform = Lifeform(x, y)
-                    self.grid[x][y].place_lifeform(lifeform)
+                # Check if square has room (less than 4 lifeforms)
+                current_count = sum(1 for lf in self.lifeforms if lf.grid_x == x and lf.grid_y == y and lf.alive)
+                
+                if current_count < 4:
+                    lifeform = Lifeform(x, y, self.lifeform_rng, self.grid_size, self.grid_size)
                     self.lifeforms.append(lifeform)
                     break
+                    
                 attempts += 1
                 
     def start_simulation(self):
@@ -124,94 +218,58 @@ class GridSimulation:
     def reset_simulation(self):
         """Reset the simulation"""
         self.stop_simulation()
+        self.time_period = 0
         self.create_grid()
         self.place_initial_population()
         self.draw_grid()
         
     def update_simulation(self, dt: float):
         """Update simulation logic"""
-        # Update grid squares (food regeneration)
+        # Apply speed multiplier to dt
+        adjusted_dt = dt * self.speed_multiplier
+        
+        # Update grid squares (food regeneration with seasonal effects)
         for x in range(self.grid_size):
             for y in range(self.grid_size):
-                self.grid[x][y].update(dt)
-                
+                self.grid[x][y].regenerate_food(adjusted_dt, self.time_period)
+        
         # Update lifeforms
-        alive_lifeforms = []
         for lifeform in self.lifeforms:
-            if not lifeform.alive:
-                # Remove dead lifeform from grid
-                self.grid[lifeform.grid_x][lifeform.grid_y].remove_lifeform()
-                continue
-                
-            square = self.grid[lifeform.grid_x][lifeform.grid_y]
-            
-            # Try to eat food
-            food_available = square.consume_food() if square.has_food() else 0
-            lifeform.update(dt, food_available)
-            
-            # Try to move if no food and can move
-            if not square.has_food() and lifeform.can_move() and lifeform.alive:
-                self.try_move_lifeform(lifeform)
-                
             if lifeform.alive:
-                alive_lifeforms.append(lifeform)
+                # Let lifeform eat from current square
+                current_square = self.grid[lifeform.grid_x][lifeform.grid_y]
+                lifeform.update(adjusted_dt, current_square)
             else:
-                # Remove dead lifeform from grid
-                self.grid[lifeform.grid_x][lifeform.grid_y].remove_lifeform()
-                
-        self.lifeforms = alive_lifeforms
+                # Update death timer for fading
+                lifeform.death_timer += adjusted_dt
         
-    def try_move_lifeform(self, lifeform: Lifeform):
-        """Try to move a lifeform to adjacent square"""
-        possible_moves = []
+        # Remove fully faded lifeforms
+        self.lifeforms = [lf for lf in self.lifeforms if lf.alive or lf.death_timer < 7.0]
         
-        # Check all adjacent squares (including diagonals)
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                if dx == 0 and dy == 0:
-                    continue
-                    
-                new_x = lifeform.grid_x + dx
-                new_y = lifeform.grid_y + dy
-                
-                # Check bounds
-                if 0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size:
-                    possible_moves.append((new_x, new_y))
+        # Increment time period
+        self.time_period += adjusted_dt * 0.1  # Adjust this rate as needed
         
-        if not possible_moves:
-            return
-            
-        # Choose random move
-        new_x, new_y = random.choice(possible_moves)
-        target_square = self.grid[new_x][new_y]
-        
-        # Check if square is occupied
-        if target_square.lifeform is not None:
-            # Fight!
-            winner = lifeform.fight(target_square.lifeform)
-            if winner == lifeform:
-                # Move to new square
-                self.grid[lifeform.grid_x][lifeform.grid_y].remove_lifeform()
-                target_square.place_lifeform(lifeform)
-                lifeform.move_to(new_x, new_y)
-        else:
-            # Move to empty square
-            self.grid[lifeform.grid_x][lifeform.grid_y].remove_lifeform()
-            target_square.place_lifeform(lifeform)
-            lifeform.move_to(new_x, new_y)
-            
+    def try_move_lifeform(self, lifeform):
+        #lifeform will move to an adjacent square
+        pass
+
     def draw_grid(self):
         """Draw the grid on canvas"""
-        self.canvas.delete("all")
+        # Force canvas to update its size first
+        self.canvas.update_idletasks()
         
         canvas_width = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
         
-        # Calculate grid positioning
+        # Calculate grid positioning - center the grid
         grid_pixel_size = self.grid_size * self.square_size
         start_x = max(0, (canvas_width - grid_pixel_size) // 2)
         start_y = max(0, (canvas_height - grid_pixel_size) // 2)
         
+        # Store all rectangles to create, then create them all at once
+        rectangles_to_create = []
+        
+        # Prepare food squares (background)
         for x in range(self.grid_size):
             for y in range(self.grid_size):
                 x1 = start_x + x * self.square_size
@@ -219,19 +277,94 @@ class GridSimulation:
                 x2 = x1 + self.square_size
                 y2 = y1 + self.square_size
                 
-                color = self.grid[x][y].get_color()
-                color_hex = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+                # Get food background color
+                food_color = self.grid[x][y].get_color()
+                food_color_hex = f"#{food_color[0]:02x}{food_color[1]:02x}{food_color[2]:02x}"
                 
-                self.canvas.create_rectangle(x1, y1, x2, y2, 
-                                           fill=color_hex, outline="gray")
+                rectangles_to_create.append((x1, y1, x2, y2, food_color_hex))
+        
+        # Now clear and redraw all at once
+        self.canvas.delete("all")
+        
+        for x1, y1, x2, y2, color_hex in rectangles_to_create:
+            self.canvas.create_rectangle(x1, y1, x2, y2, 
+                                       fill=color_hex, outline="gray")
+        
+        # Draw lifeforms as circles on top
+        for lifeform in self.lifeforms:
+            if lifeform.alive or lifeform.death_timer < 7.0:  # Show until fully faded
+                # Get position within grid
+                grid_x1 = start_x + lifeform.grid_x * self.square_size
+                grid_y1 = start_y + lifeform.grid_y * self.square_size
+                
+                # Count lifeforms in this square to determine position
+                lifeforms_in_square = [lf for lf in self.lifeforms 
+                                     if lf.grid_x == lifeform.grid_x and lf.grid_y == lifeform.grid_y 
+                                     and (lf.alive or lf.death_timer < 7.0)]
+                
+                try:
+                    position_index = lifeforms_in_square.index(lifeform)
+                except ValueError:
+                    position_index = 0
+                
+                # Position in 2x2 grid within square
+                positions = [
+                    (0.25, 0.25),  # Top-left
+                    (0.75, 0.25),  # Top-right  
+                    (0.25, 0.75),  # Bottom-left
+                    (0.75, 0.75)   # Bottom-right
+                ]
+                
+                if position_index < len(positions):
+                    rel_x, rel_y = positions[position_index]
+                    
+                    # Calculate circle position and size
+                    circle_size = self.square_size * 0.3  # 30% of square size
+                    center_x = grid_x1 + (self.square_size * rel_x)
+                    center_y = grid_y1 + (self.square_size * rel_y)
+                    
+                    circle_x1 = center_x - circle_size // 2
+                    circle_y1 = center_y - circle_size // 2
+                    circle_x2 = center_x + circle_size // 2
+                    circle_y2 = center_y + circle_size // 2
+                    
+                    # Get lifeform color and transparency
+                    lifeform_color = lifeform.get_color()
+                    
+                    # Apply transparency for dead lifeforms
+                    if not lifeform.alive:
+                        fade_progress = lifeform.death_timer / 7.0  # 0 to 1
+                        # Fade to background by mixing with food color
+                        food_color = self.grid[lifeform.grid_x][lifeform.grid_y].get_color()
+                        
+                        # Linear interpolation between lifeform and food color
+                        mixed_color = (
+                            int(lifeform_color[0] * (1 - fade_progress) + food_color[0] * fade_progress),
+                            int(lifeform_color[1] * (1 - fade_progress) + food_color[1] * fade_progress),
+                            int(lifeform_color[2] * (1 - fade_progress) + food_color[2] * fade_progress)
+                        )
+                        lifeform_color = mixed_color
+                    
+                    lifeform_color_hex = f"#{lifeform_color[0]:02x}{lifeform_color[1]:02x}{lifeform_color[2]:02x}"
+                    
+                    self.canvas.create_oval(circle_x1, circle_y1, circle_x2, circle_y2,
+                                          fill=lifeform_color_hex, outline="black", width=1)
                 
     def update_stats(self):
         """Update statistics display"""
-        if self.lifeforms:
-            avg_health = sum(lf.health for lf in self.lifeforms) / len(self.lifeforms)
-            stats_text = f"Population: {len(self.lifeforms)} | Avg Health: {avg_health:.1f}"
+        alive_lifeforms = [lf for lf in self.lifeforms if lf.alive]
+        
+        if alive_lifeforms:
+            avg_health = sum(lf.health for lf in alive_lifeforms) / len(alive_lifeforms)
+            stats_text = f"Population: {len(alive_lifeforms)} | Avg Health: {avg_health:.1f}"
         else:
             stats_text = "Population: 0 | All lifeforms extinct!"
+            
+        # Add seasonal information
+        season_names = ["Winter", "Spring", "Summer", "Autumn"]
+        season_index = int((self.time_period % 52) / 13)
+        current_season = season_names[season_index]
+        stats_text += f" | Season: {current_season} ({self.time_period:.1f})"
             
         self.stats_label.config(text=stats_text)
         
@@ -247,13 +380,14 @@ class GridSimulation:
             self.update_stats()
             
             # Schedule next update
-            self.root.after(100, self.update_loop)  # Update every 100ms
+            self.root.after(500, self.update_loop)  # Update every 500ms (slower)
             
     def run(self):
         """Start the GUI"""
         self.reset_simulation()
         self.root.mainloop()
 
+        
 if __name__ == "__main__":
     sim = GridSimulation()
     sim.run()
