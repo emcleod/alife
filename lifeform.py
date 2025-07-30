@@ -69,15 +69,12 @@ class GridSquare:
             
     def consume_food(self, amount: float = 2.0) -> float:
         actual_consumed = min(amount, self.food_amount)
-        old_amount = self.food_amount
         self.food_amount -= actual_consumed
-        if actual_consumed > 0:
-            print(f"Food consumed: {actual_consumed:.1f}, was {old_amount:.1f}, now {self.food_amount:.1f}")
         return actual_consumed
         
     def has_food(self) -> bool:
         """Check if square has any food available"""
-        return self.food_amount > 1.0  # Higher threshold - need substantial food
+        return self.food_amount > 50.0  # Higher threshold - need substantial food
         
     def place_lifeform(self, lifeform):
         pass
@@ -120,20 +117,21 @@ class Lifeform:
         self.movement_threshold = lifeform_rng.uniform(8, 15)  # Property 2: movement threshold varies
         
         self.alive = True
-        self.death_timer = 0  # Time since death (for displaying fade)
+        self.death_timer = -1.0  # Time since death (for displaying fade)
         self.id = next(counter)
         self.max_x = max_x
         self.max_y = max_y
 
-    def update(self, dt: float, current_square: GridSquare):
+    def update(self, dt: float, time_period: float, current_square: GridSquare):
         """Update lifeform behavior"""
         if not self.alive:
             return
-                    
-        if current_square.has_food() and current_square.food_amount > 1.0:
-            food_consumed = current_square.consume_food(1 * dt)            
+
+        print(f"current square food: {current_square.food_amount}, has food: {current_square.has_food()}")  
+        if current_square.has_food():
+            food_consumed = current_square.consume_food(5 * dt)            
             # Consume food and convert to health
-            food_consumed = current_square.consume_food(1 * dt)  # Eat 5 food per second
+            food_consumed = current_square.consume_food(5 * dt)  # Eat 5 food per second
             health_gained = food_consumed * 2.0  # Convert food to health (2:1 ratio)
             
             self.health += health_gained
@@ -141,8 +139,9 @@ class Lifeform:
             if self.health > self.max_health:
                 self.health = self.max_health
         else:
-            dx = int(self.lifeform_rng.uniform(-1.1, 1.1))
-            dy = int(self.lifeform_rng.uniform(-1.1, 1.1))
+            move_list = [-1, 0, 1]
+            dx = random.choice(move_list)
+            dy = random.choice(move_list)
             if dx + self.grid_x < 0:
                 dx = 1
             elif dx + self.grid_x >= self.max_x:
@@ -151,7 +150,8 @@ class Lifeform:
                 dy = 1
             elif dy + self.grid_y >= self.max_y:
                 dy = -1
-            has_moved = self.move_to(dx + self.grid_x, dy + self.grid_y, 1) 
+            print(f"No food, trying to move. dx={dx}, dy={dy}")
+            has_moved = self.move_to(dx + self.grid_x, dy + self.grid_y, time_period) 
             if not has_moved:
                 self.alive = False
                 self.death_timer = 0
@@ -177,7 +177,7 @@ class Lifeform:
         seasonal_cost_multiplier = 1.0 + 0.5 * math.cos(seasonal_angle)  # 1.5x in winter, 0.5x in summer
         
         total_movement_cost = self.movement_cost * seasonal_cost_multiplier
-        
+        print(f"movement cost: {total_movement_cost}, health: {self.health}, movement_threshold: {self.movement_threshold}")
         return self.health > self.movement_threshold and self.health >= total_movement_cost
 
     def move_to(self, new_x: int, new_y: int, time_period: float = 0):        
@@ -195,11 +195,10 @@ class Lifeform:
         if self.health < 0:
             self.health = 0
             
-        if new_x < 0 or new_y < 0 or new_x > 9 or new_y > 9:
-            pass
         # Move to new position
         self.grid_x = new_x
         self.grid_y = new_y
+        print("Moved!")
         return True
 
     def fight(self, other: 'Lifeform') -> 'Lifeform':
