@@ -12,7 +12,7 @@ class GridSquare:
         self.food_rng = food_rng  # Dedicated RNG for this square's food behavior
         self.food_amount = food_rng.uniform(10, 30)  # Random initial food
         self.max_food = food_rng.uniform(25, 40)     # Random max capacity
-        self.regen_rate = food_rng.uniform(0.5, 2.0) # Random regen rate per second
+        self.regen_rate = food_rng.uniform(1.0, 3.0) # Random regen rate per second
         self.base_regen_rate = self.regen_rate       # Store original for habitat modifications
         self.lifeform = None
         
@@ -127,7 +127,6 @@ class Lifeform:
         if not self.alive:
             return
 
-        print(f"current square food: {current_square.food_amount}, has food: {current_square.has_food()}")  
         if current_square.has_food():
             food_consumed = current_square.consume_food(5 * dt)            
             # Consume food and convert to health
@@ -150,7 +149,6 @@ class Lifeform:
                 dy = 1
             elif dy + self.grid_y >= self.max_y:
                 dy = -1
-            print(f"No food, trying to move. dx={dx}, dy={dy}")
             has_moved = self.move_to(dx + self.grid_x, dy + self.grid_y, time_period) 
             if not has_moved:
                 self.alive = False
@@ -177,7 +175,6 @@ class Lifeform:
         seasonal_cost_multiplier = 1.0 + 0.5 * math.cos(seasonal_angle)  # 1.5x in winter, 0.5x in summer
         
         total_movement_cost = self.movement_cost * seasonal_cost_multiplier
-        print(f"movement cost: {total_movement_cost}, health: {self.health}, movement_threshold: {self.movement_threshold}")
         return self.health > self.movement_threshold and self.health >= total_movement_cost
 
     def move_to(self, new_x: int, new_y: int, time_period: float = 0):        
@@ -198,7 +195,6 @@ class Lifeform:
         # Move to new position
         self.grid_x = new_x
         self.grid_y = new_y
-        print("Moved!")
         return True
 
     def fight(self, other: 'Lifeform') -> 'Lifeform':
