@@ -4,7 +4,7 @@ import random
 import time
 from typing import List
 from lifeform import Lifeform, GridSquare
-
+import itertools
 
 class GridSimulation:
     """Grid-based artificial life simulation with tkinter GUI"""
@@ -80,7 +80,7 @@ class GridSimulation:
         ttk.Label(control_frame, text="Speed:").pack(side=tk.LEFT, padx=(20,5))
         self.speed_var = tk.StringVar(value="1.0")
         speed_dropdown = ttk.Combobox(control_frame, textvariable=self.speed_var,
-                                    values=["0.1", "0.25", "0.5", "1.0", "2.0", "5.0", "10.0"], 
+                                    values=["0.1", "0.25", "0.5", "1.0", "2.0", "5.0", "10.0", "20.0"], 
                                     width=6)
         speed_dropdown.pack(side=tk.LEFT, padx=5)
         speed_dropdown.bind("<<ComboboxSelected>>", self.on_speed_change)
@@ -102,7 +102,7 @@ class GridSimulation:
         stats_frame = ttk.Frame(left_frame)
         stats_frame.pack(pady=5)
         
-        self.stats_label = ttk.Label(stats_frame, text="Population: 0 | Avg Health: 0.0")
+        self.stats_label = ttk.Label(stats_frame, text="Population: 0 | Avg Health: 0.0 | Avg Max Health: 0.0")
         self.stats_label.pack()
         
         # Canvas for grid
@@ -278,7 +278,8 @@ class GridSimulation:
             
             # Properties
             info_text += f"Max Health: {lifeform.max_health:.1f}\n"
-            info_text += f"Movement Threshold: {lifeform.movement_threshold:.1f}\n\n"
+            info_text += f"Movement Threshold: {lifeform.movement_threshold:.1f}\n"
+            info_text += f"Food eaten/second: {lifeform.food_per_second:.1f}\n\n"
             
             # Movement ability
             can_move = lifeform.can_move(self.time_period)
@@ -412,7 +413,7 @@ class GridSimulation:
                     lifeform = Lifeform(x, y, self.lifeform_rng, self.grid_size, self.grid_size)
                     self.lifeforms.append(lifeform)
                     break
-                    
+
                 attempts += 1
                 
     def start_simulation(self):
@@ -458,26 +459,65 @@ class GridSimulation:
                 self.grid[x][y].regenerate_food(adjusted_dt, self.time_period)
         
         # Update lifeforms
+        new_lifeforms = []
         for lifeform in self.lifeforms:
             if lifeform.alive:
                 # Let lifeform eat from current square
                 current_square = self.grid[lifeform.grid_x][lifeform.grid_y]
                 lifeform.update(adjusted_dt, self.time_period, current_square)
+                # See if it's going to reproduce
+                new_lifeform = None
+                # is there room on the current or any of the adjacent squares
+                # if not, either the new or the old lifeform dies
+                # Check if square has room (less than 4 lifeforms)
+                current_count = sum(1 for lf in self.lifeforms if lf.grid_x == x and lf.grid_y == y and lf.alive)
+                if current_count < 4:
+                    # Let lifeform reproduce
+                    new_lifeform = lifeform.reproduce(current_square, lifeform.grid_x, lifeform.grid_y, self.grid_size, self.grid_size)
+                else:
+                    # See if there's space in an adjacent square - if so, reproduce
+                    adjacent_xs = [-1, 0, 1]
+                    self.lifeform_rng.shuffle(adjacent_xs)
+                    adjacent_ys = [-1, 0, 1]
+                    self.lifeform_rng.shuffle(adjacent_ys)  
+                    positions = list(itertools.product(adjacent_xs, adjacent_ys))
+                    grid_x, grid_y = None, None
+                    for position_x, position_y in positions:
+                        if position_x + lifeform.grid_x >= 0 and position_x + lifeform.grid_x < self.grid_size \
+                            and position_y + lifeform.grid_y >= 0 and position_y + lifeform.grid_y < self.grid_size:
+                            grid_x = position_x + lifeform.grid_x
+                            grid_y = position_y + lifeform.grid_y
+                    if grid_x and grid_y:
+                        new_lifeform = lifeform.reproduce(current_square, grid_x, grid_y, self.grid_size, self.grid_size)                        
+                    else:
+                        # no room, so randomly kill new or original lifeform
+                        if self.lifeform_rng.uniform(0, 1) > 0.5:
+                            new_lifeform = None
+                        else:
+                            lifeform.alive = False
+                            lifeform.health = 0
+                            lifeform.death_timer = 10 # will be removed immediately
+                if new_lifeform:                               
+                    new_lifeforms.append(new_lifeform)
+                # if it's going to fight something on the same square
+                if current_count > 1:
+                    other_lifeform = lifeform.lifeform_rng.choice([lf for lf in self.lifeforms if lf.grid_x == x and lf.grid_y == y])                                
+                    lifeform.fight(other_lifeform, self.time_period)
             else:
                 # Update death timer for fading
                 if lifeform.death_timer >= 0:
                     lifeform.death_timer += adjusted_dt
         
-        # Remove fully faded lifeforms
+        # Remove fully faded lifeforms or those that died during reproduction
         self.lifeforms = [lf for lf in self.lifeforms if lf.alive or lf.death_timer < 7.0]
-        
+
+        # Add new lifeforms
+        self.lifeforms.extend(new_lifeforms)
+
         # Increment time period
         self.time_period += adjusted_dt * 0.1  # Adjust this rate as needed
+        print(len(self.lifeforms))
         
-    def try_move_lifeform(self, lifeform):
-        #lifeform will move to an adjacent square
-        pass
-
     def draw_grid(self):
         """Draw the grid on canvas"""
         # Force canvas to update its size first
@@ -594,7 +634,8 @@ class GridSimulation:
         
         if alive_lifeforms:
             avg_health = sum(lf.health for lf in alive_lifeforms) / len(alive_lifeforms)
-            stats_text = f"Population: {len(alive_lifeforms)} | Avg Health: {avg_health:.1f}"
+            max_avg_health = sum(lf.max_health for lf in alive_lifeforms) / len(alive_lifeforms)
+            stats_text = f"Population: {len(alive_lifeforms)} | Avg Health: {avg_health:.1f} | Avg Max Health: {max_avg_health:.1f}"
         else:
             stats_text = "Population: 0 | All lifeforms extinct!"
             
@@ -602,7 +643,7 @@ class GridSimulation:
         season_names = ["Winter", "Spring", "Summer", "Autumn"]
         season_index = int((self.time_period % 52) / 13)
         current_season = season_names[season_index]
-        stats_text += f" | Season: {current_season} ({self.time_period:.1f})"
+        stats_text += f" | Season: {current_season})"
         
         # Add pause status
         if self.paused:
@@ -622,7 +663,7 @@ class GridSimulation:
             self.update_stats()
             
             # Schedule next update
-            self.root.after(500, self.update_loop)  # Update every 500ms (slower)
+            self.root.after(50, self.update_loop)  
             
     def run(self):
         """Start the GUI"""

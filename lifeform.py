@@ -1,18 +1,20 @@
 import random
 import math
-from typing import Tuple
+from typing import Tuple, Optional
 import itertools
 
 counter = itertools.count()
 
+#TODO everything that's uniform should be Gaussian
 class GridSquare:
     """A square on the grid that can contain food and lifeforms"""
     
     def __init__(self, food_rng: random.Random):
         self.food_rng = food_rng  # Dedicated RNG for this square's food behavior
         self.food_amount = food_rng.uniform(10, 30)  # Random initial food
-        self.max_food = food_rng.uniform(25, 40)     # Random max capacity
-        self.regen_rate = food_rng.uniform(1.0, 3.0) # Random regen rate per second
+        self.max_food = food_rng.uniform(25, 70)     # Random max capacity  
+        # Increase regen rate if there's more food in the first place      
+        self.regen_rate = food_rng.uniform(1.0, 12 * self.max_food / 70) # Random regen rate per second
         self.base_regen_rate = self.regen_rate       # Store original for habitat modifications
         self.lifeform = None
         
@@ -106,21 +108,38 @@ class Lifeform:
     fade_time = 7.0  # Time for dead lifeforms to fade away
     movement_cost = 3.0  # Health cost for moving
     
-    def __init__(self, grid_x: int, grid_y: int, lifeform_rng: random.Random, max_x: int, max_y: int):
+    def __init__(self, grid_x: int, grid_y: int, lifeform_rng: random.Random, max_x: int, max_y: int, 
+                 max_health: float = -1, movement_threshold: float = -1):
         self.grid_x = grid_x
         self.grid_y = grid_y
         self.lifeform_rng = lifeform_rng
         
         # Random properties for each individual
-        self.max_health = lifeform_rng.uniform(40, 60)  # Property 1: max health varies
-        self.health = self.max_health  # Start at full health
-        self.movement_threshold = lifeform_rng.uniform(8, 15)  # Property 2: movement threshold varies
-        
+        # Max health varies or is inherited from parent
+        self.max_health = lifeform_rng.uniform(40, 60) if max_health < 0 else max_health 
+        # Start at full health
+        self.health = self.max_health  
+        # Movement threshold varies or is inherited from parent
+        self.movement_threshold = lifeform_rng.uniform(8, 15) if movement_threshold < 0 else movement_threshold
+        # Food required per second
+        self.food_per_second = int(lifeform_rng.uniform(2, 7))
         self.alive = True
         self.death_timer = -1.0  # Time since death (for displaying fade)
         self.id = next(counter)
         self.max_x = max_x
         self.max_y = max_y
+
+    def reproduce(self, current_square: GridSquare, grid_x: int, grid_y: int, max_x: int, max_y: int) -> Optional['Lifeform']:
+        # chance of reproduction if lifeform is healthy depends on amount of food
+        reproduction_chance = 1 - (0.025 * current_square.food_amount / 700)
+        # if it's healthy it will reproduce by chance
+        if self.health > self.max_health * 0.8 and self.lifeform_rng.uniform(0, 1) > reproduction_chance: 
+            # Inherit health and stamina from parent
+            max_health = self.max_health * self.lifeform_rng.uniform(0.85, 1.15)
+            movement_threshold = self.movement_threshold * self.lifeform_rng.uniform(0.85, 1.15)
+            return Lifeform(grid_x, grid_y, self.lifeform_rng, max_x, max_y, max_health, movement_threshold)
+        return None
+
 
     def update(self, dt: float, time_period: float, current_square: GridSquare):
         """Update lifeform behavior"""
@@ -128,9 +147,8 @@ class Lifeform:
             return
 
         if current_square.has_food():
-            food_consumed = current_square.consume_food(5 * dt)            
             # Consume food and convert to health
-            food_consumed = current_square.consume_food(5 * dt)  # Eat 5 food per second
+            food_consumed = current_square.consume_food(self.food_per_second * dt)  
             health_gained = food_consumed * 2.0  # Convert food to health (2:1 ratio)
             
             self.health += health_gained
@@ -192,15 +210,80 @@ class Lifeform:
         if self.health < 0:
             self.health = 0
             
+        if new_x > 9 or new_y > 9:
+            pass
         # Move to new position
         self.grid_x = new_x
         self.grid_y = new_y
         return True
 
-    def fight(self, other: 'Lifeform') -> 'Lifeform':
-        """Fight with another lifeform - stub for now"""
-        pass
-
+    def fight(self, other: 'Lifeform', time_period: float) -> None:        
+        """Fight with another lifeform"""
+        # Are they going to fight
+        if self.lifeform_rng.uniform(0, 1) > 0.8:
+            won_fight = self.start_fighting(other)
+            if other.death_timer >= 0:
+                # it's dead
+                return
+            # Where will the other one run to
+            if won_fight:
+                move_list = [-1, 0, 1]
+                dx = random.choice(move_list)
+                dy = random.choice(move_list)
+                if dx + other.grid_x < 0:
+                    dx = 1
+                elif dx + other.grid_x >= other.max_x:
+                    dx = -1
+                if dy + other.grid_y < 0:
+                    dy = 1
+                elif dy + other.grid_y >= other.max_y:
+                    dy = -1
+                # other one tries to flee
+                has_moved = other.move_to(dx + other.grid_x, dy + other.grid_y, time_period)
+                if not has_moved:
+                    # Have to carry on fighting
+                    self.fight(other, time_period)
+            else:
+                if self.death_timer >= 0:
+                    # it's dead
+                    return
+                # Where will the lifeform run to
+                move_list = [-1, 0, 1]
+                dx = random.choice(move_list)
+                dy = random.choice(move_list)
+                if dx + self.grid_x < 0:
+                    dx = 1
+                elif dx + self.grid_x >= self.max_x:
+                    dx = -1
+                if dy + self.grid_y < 0:
+                    dy = 1
+                elif dy + self.grid_y >= self.max_y:
+                    dy = -1
+                # try to flee
+                has_moved = self.move_to(dx + self.grid_x, dy + self.grid_y, time_period)
+                if not has_moved:
+                    self.fight(other, time_period)
+        return
+        
+    def start_fighting(self, other: 'Lifeform') -> bool:
+        # It will, so find out when it will run away
+        life_remaining_before_flee = 0 if self.lifeform_rng.uniform(0, 1) < 0.2 else self.lifeform_rng.uniform(0, 1) * self.health
+        other_life_remaining_before_flee = 0 if other.lifeform_rng.uniform(0, 1) < 0.2 else other.lifeform_rng.uniform(0, 1) * other.health
+        # start fighting
+        while self.health > life_remaining_before_flee and other.health > other_life_remaining_before_flee:
+            damage_inflicted = self.lifeform_rng.uniform(0, self.health / self.max_health * 10)
+            damage_received = self.lifeform_rng.uniform(0, other.health / other.max_health * 10)
+            self.health -= damage_received
+            other.health -= damage_inflicted
+        if self.health <= 0:
+            self.alive = False
+            self.death_timer = 0
+        if other.health <= 0:
+            other.alive = False
+            other.death_timer = 0
+        # Is it alive and staying on this square
+        return self.alive and self.health >= life_remaining_before_flee
+            
     def get_color(self) -> Tuple[int, int, int]:
         """Get color based on health: blue (healthy) to grey (unhealthy)"""
         if not self.alive:
